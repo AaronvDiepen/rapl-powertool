@@ -143,18 +143,18 @@ read_msr (int fd, unsigned int which)
 }
 
 static int
-rapl_msr_amd_package (int interval)
+rapl_msr_amd_package_interval (int interval)
 {
   unsigned int i;
-  double power_used;
+  double energy_used;
   double *time_unit = (double*)malloc(sizeof(double)*total_packages);
   double *energy_unit = (double*)malloc(sizeof(double)*total_packages);
   double *power_unit = (double*)malloc(sizeof(double)*total_packages);
-  double *prev_power_used = (double*)malloc(sizeof(double)*total_packages);
+  double *prev_energy_used = (double*)malloc(sizeof(double)*total_packages);
 
   int *fd = (int*)malloc(sizeof(int)*total_packages);
 
-  for (int i = 0; i < total_packages; i++) {
+  for (i = 0; i < total_packages; i++) {
     fd[i] = open_msr(package_map[i]);
 
     int core_energy_units = read_msr(fd[i], AMD_MSR_PWR_UNIT);
@@ -163,27 +163,69 @@ rapl_msr_amd_package (int interval)
     energy_unit[i] = pow (0.5,(double)((core_energy_units & AMD_ENERGY_UNIT_MASK) >> 8));
     power_unit[i] = pow (0.5,(double)((core_energy_units & AMD_POWER_UNIT_MASK)));
 
-    prev_power_used[i] = read_msr (fd[i], AMD_MSR_PACKAGE_ENERGY) * energy_unit[i];
+    prev_energy_used[i] = read_msr (fd[i], AMD_MSR_PACKAGE_ENERGY) * energy_unit[i];
   }
 
   while (1) {
     usleep(interval * 1000);
-    for (i = 0; i<total_packages;i++)
+    for (i = 0; i < total_packages;i++)
     {
-      power_used = read_msr(fd[i], AMD_MSR_PACKAGE_ENERGY) * energy_unit[i];
+      energy_used = read_msr(fd[i], AMD_MSR_PACKAGE_ENERGY) * energy_unit[i];
       if (i > 0)
       {
         fputs(", ", stdout);
       }
 
       printf("%g",
-            (power_used - prev_power_used[i]) * 1000 / interval
+              (energy_used - prev_energy_used[i]) * 1000 / interval
             );
 
-      prev_power_used[i] = power_used;
+      prev_energy_used[i] = energy_used;
     }
     fputs("\n", stdout);
   }
+
+  return 0;
+}
+
+static int
+rapl_msr_amd_package_duration (int duration)
+{
+  unsigned int i;
+  double energy_used;
+  double *time_unit = (double*)malloc(sizeof(double)*total_packages);
+  double *energy_unit = (double*)malloc(sizeof(double)*total_packages);
+  double *power_unit = (double*)malloc(sizeof(double)*total_packages);
+  double *prev_energy_used = (double*)malloc(sizeof(double)*total_packages);
+
+  int *fd = (int*)malloc(sizeof(int)*total_packages);
+
+  for (i = 0; i < total_packages; i++) {
+    fd[i] = open_msr(package_map[i]);
+
+    int core_energy_units = read_msr(fd[i], AMD_MSR_PWR_UNIT);
+
+    time_unit[i] = pow (0.5, (double)((core_energy_units & AMD_TIME_UNIT_MASK) >> 16));
+    energy_unit[i] = pow (0.5,(double)((core_energy_units & AMD_ENERGY_UNIT_MASK) >> 8));
+    power_unit[i] = pow (0.5,(double)((core_energy_units & AMD_POWER_UNIT_MASK)));
+
+    prev_energy_used[i] = read_msr (fd[i], AMD_MSR_PACKAGE_ENERGY) * energy_unit[i];
+  }
+
+  usleep(duration * 1000);
+  for (i = 0; i < total_packages;i++)
+  {
+    energy_used = read_msr(fd[i], AMD_MSR_PACKAGE_ENERGY) * energy_unit[i];
+    if (i > 0)
+    {
+      fputs(", ", stdout);
+    }
+
+    printf("%g",
+            (energy_used - prev_energy_used[i])
+          );
+  }
+  fputs("\n", stdout);
 
   return 0;
 }
@@ -212,7 +254,9 @@ Usage: %s [OPTION]... \n\
              );
 
       printf ("\
-Measure average cpu power usage every %d ms using rapl.\n\
+Measure average cpu power usage every %d ms, outputs in Watt\n\
+or total energy consumption over a duration of [d] ms, outputs in Joules\n\
+uses rapl energy levels to perform the measurements.\n\
 \n\
 Outputs as csv when multiple packages are detected\n\
 ",
@@ -226,6 +270,7 @@ Outputs as csv when multiple packages are detected\n\
              );
 
       fputs ("\
+  -d, --duration    measure over [VAL] ms, outputs the consumption in Joules\n\
       --help        display this help and exit\n\
       --version     output version information and exit\n\
 ", stdout);
@@ -272,23 +317,29 @@ main (int argc, char **argv)
 {
   /* Variables that are set according to the specified options.  */
   uintmax_t interval = DEFAULT_INTERVAL;
+  uintmax_t duration = 0;
 
   static struct option const long_options[] =
   {
     {"interval", required_argument, NULL, 'i'},
+    {"duration", required_argument, NULL, 'd'},
     {"help", no_argument, NULL, -2},
     {"version", no_argument, NULL, -3},
     {NULL, 0, NULL, 0}
   };
 
   int c;
-  while ((c = getopt_long (argc, argv, "i:", long_options, NULL))
+  while ((c = getopt_long (argc, argv, "i:d:", long_options, NULL))
       != -1)
     {
     switch (c)
       {
       case 'i':
         interval = convert (optarg);
+        break;
+
+      case 'd':
+        duration = convert (optarg);
         break;
 
       case -2:
@@ -305,12 +356,14 @@ main (int argc, char **argv)
       }
     }
 
-  if (interval < 1) {
-      exit (EXIT_FAILURE);
+  detect_packages ();
+
+  if (duration > 0) {
+    rapl_msr_amd_package_duration (duration);
+    exit (EXIT_SUCCESS);
   }
 
-  detect_packages ();
-  rapl_msr_amd_package (interval);
+  rapl_msr_amd_package_interval (interval);
 
   exit (EXIT_SUCCESS);
 }
