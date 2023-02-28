@@ -14,16 +14,19 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
  * MA 02110-1301, USA.
  * 
- * This program is based on rapl-read-ryzen:
+ * This program is based on rapl-read-ryzen and intel_rapl_power:
  * https://github.com/djselbeck/rapl-read-ryzen
+ * https://github.com/razvanlupusoru/Intel-RAPL-via-Sysfs
  * 
  * compile with:
- * gcc -o ryzen-rapl-powertool ryzen-rapl-powertool.c -lm
+ * gcc -o rapl-powertool rapl-powertool.c -lm
  */
 
 #include <ctype.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <inttypes.h>
@@ -32,7 +35,7 @@
 #include <getopt.h>
 
 /* The metadata of the program  */
-#define PROGRAM_NAME            "Ryzen RAPL powertool"
+#define PROGRAM_NAME            "RAPL powertool"
 #define PROGRAM_VERSION         "v0.1"
 #define AUTHOR                  "Aaron van Diepen"
 
@@ -40,11 +43,16 @@
 #define DEFAULT_INTERVAL        1000
 
 /* AMD READ VALUES              */
-#define AMD_MSR_PWR_UNIT        0xC0010299
-#define AMD_MSR_PACKAGE_ENERGY  0xC001029B
-#define AMD_TIME_UNIT_MASK      0xF0000
-#define AMD_ENERGY_UNIT_MASK    0x1F00
-#define AMD_POWER_UNIT_MASK     0xF
+#define AMD_MSR_PWR_UNIT         0xC0010299
+#define AMD_MSR_PACKAGE_ENERGY   0xC001029B
+#define INTEL_MSR_PWR_UNIT       0x606
+#define INTEL_MSR_PACKAGE_ENERGY 0x611
+#define TIME_UNIT_OFFSET         0x10
+#define TIME_UNIT_MASK           0xF0000
+#define ENERGY_UNIT_OFFSET       0x08
+#define ENERGY_UNIT_MASK         0x1F00
+#define POWER_UNIT_OFFSET        0x0
+#define POWER_UNIT_MASK          0xF
 
 /* MAX CPU VALUES              */
 #define MAX_CORES               1024
@@ -56,6 +64,9 @@ static int total_cores=0,total_packages=0;
 static char* exec_name;
 
 static int package_map[MAX_PACKAGES];
+
+static int MSR_PWR_UNIT;
+static int MSR_PACKAGE_ENERGY;
 
 static int
 detect_packages (void)
@@ -143,7 +154,7 @@ read_msr (int fd, unsigned int which)
 }
 
 static int
-rapl_msr_amd_package_interval (int interval)
+rapl_msr_package_interval (int interval)
 {
   unsigned int i;
   double energy_used;
@@ -157,23 +168,23 @@ rapl_msr_amd_package_interval (int interval)
   for (i = 0; i < total_packages; i++) {
     fd[i] = open_msr(package_map[i]);
 
-    int core_energy_units = read_msr(fd[i], AMD_MSR_PWR_UNIT);
+    int core_energy_units = read_msr(fd[i], MSR_PWR_UNIT);
 
-    time_unit[i] = pow (0.5, (double)((core_energy_units & AMD_TIME_UNIT_MASK) >> 16));
-    energy_unit[i] = pow (0.5,(double)((core_energy_units & AMD_ENERGY_UNIT_MASK) >> 8));
-    power_unit[i] = pow (0.5,(double)((core_energy_units & AMD_POWER_UNIT_MASK)));
+    time_unit[i] = pow (0.5, (double)((core_energy_units & TIME_UNIT_MASK) >> TIME_UNIT_OFFSET));
+    energy_unit[i] = pow (0.5,(double)((core_energy_units & ENERGY_UNIT_MASK) >> ENERGY_UNIT_OFFSET));
+    power_unit[i] = pow (0.5,(double)((core_energy_units & POWER_UNIT_MASK) >> POWER_UNIT_OFFSET));
 
-    prev_energy_used[i] = read_msr (fd[i], AMD_MSR_PACKAGE_ENERGY) * energy_unit[i];
+    prev_energy_used[i] = read_msr (fd[i], MSR_PACKAGE_ENERGY) * energy_unit[i];
   }
 
   while (1) {
     usleep(interval * 1000);
     for (i = 0; i < total_packages;i++)
     {
-      energy_used = read_msr(fd[i], AMD_MSR_PACKAGE_ENERGY) * energy_unit[i];
+      energy_used = read_msr(fd[i], MSR_PACKAGE_ENERGY) * energy_unit[i];
       if (i > 0)
       {
-        fputs(", ", stdout);
+        fputs(",", stdout);
       }
 
       printf("%g",
@@ -189,7 +200,7 @@ rapl_msr_amd_package_interval (int interval)
 }
 
 static int
-rapl_msr_amd_package_duration (int duration)
+rapl_msr_package_duration (int duration)
 {
   unsigned int i;
   double energy_used;
@@ -203,22 +214,22 @@ rapl_msr_amd_package_duration (int duration)
   for (i = 0; i < total_packages; i++) {
     fd[i] = open_msr(package_map[i]);
 
-    int core_energy_units = read_msr(fd[i], AMD_MSR_PWR_UNIT);
+    int core_energy_units = read_msr(fd[i], MSR_PWR_UNIT);
 
-    time_unit[i] = pow (0.5, (double)((core_energy_units & AMD_TIME_UNIT_MASK) >> 16));
-    energy_unit[i] = pow (0.5,(double)((core_energy_units & AMD_ENERGY_UNIT_MASK) >> 8));
-    power_unit[i] = pow (0.5,(double)((core_energy_units & AMD_POWER_UNIT_MASK)));
+    time_unit[i] = pow (0.5, (double)((core_energy_units & TIME_UNIT_MASK) >> TIME_UNIT_OFFSET));
+    energy_unit[i] = pow (0.5,(double)((core_energy_units & ENERGY_UNIT_MASK) >> ENERGY_UNIT_OFFSET));
+    power_unit[i] = pow (0.5,(double)((core_energy_units & POWER_UNIT_MASK) >> POWER_UNIT_OFFSET));
 
-    prev_energy_used[i] = read_msr (fd[i], AMD_MSR_PACKAGE_ENERGY) * energy_unit[i];
+    prev_energy_used[i] = read_msr (fd[i], MSR_PACKAGE_ENERGY) * energy_unit[i];
   }
 
   usleep(duration * 1000);
   for (i = 0; i < total_packages;i++)
   {
-    energy_used = read_msr(fd[i], AMD_MSR_PACKAGE_ENERGY) * energy_unit[i];
+    energy_used = read_msr(fd[i], MSR_PACKAGE_ENERGY) * energy_unit[i];
     if (i > 0)
     {
-      fputs(", ", stdout);
+      fputs(",", stdout);
     }
 
     printf("%g",
@@ -248,7 +259,8 @@ usage (int status)
   else
     {
       printf ("\
-Usage: %s [OPTION]... \n\
+Usage: %s [AMD/INTEL] [OPTION]... \n\
+\n\
 ",
              __progname
              );
@@ -256,7 +268,7 @@ Usage: %s [OPTION]... \n\
       printf ("\
 Measure average cpu power usage every %d ms, outputs in Watt\n\
 or total energy consumption over a duration of [d] ms, outputs in Joules\n\
-uses rapl energy levels to perform the measurements.\n\
+uses RAPL energy status to perform the measurements.\n\
 \n\
 Outputs as csv when multiple packages are detected\n\
 ",
@@ -318,6 +330,28 @@ main (int argc, char **argv)
   /* Variables that are set according to the specified options.  */
   uintmax_t interval = DEFAULT_INTERVAL;
   uintmax_t duration = 0;
+  bool cpu_specified = false;
+
+  if (argc < 2)
+  {
+    usage (EXIT_FAILURE);
+  }
+  else if (!strcmp(argv[1], "AMD"))
+  {
+    MSR_PWR_UNIT = AMD_MSR_PWR_UNIT;
+    MSR_PACKAGE_ENERGY = AMD_MSR_PACKAGE_ENERGY;
+    cpu_specified = true;
+    argv++;
+    argc--;
+  }
+  else if (!strcmp(argv[1], "INTEL"))
+  {
+    MSR_PWR_UNIT = INTEL_MSR_PWR_UNIT;
+    MSR_PACKAGE_ENERGY = INTEL_MSR_PACKAGE_ENERGY;
+    cpu_specified = true;
+    argv++;
+    argc--;
+  }
 
   static struct option const long_options[] =
   {
@@ -331,9 +365,9 @@ main (int argc, char **argv)
   int c;
   while ((c = getopt_long (argc, argv, "i:d:", long_options, NULL))
       != -1)
-    {
+  {
     switch (c)
-      {
+    {
       case 'i':
         interval = convert (optarg);
         break;
@@ -353,17 +387,21 @@ main (int argc, char **argv)
 
       default:
         usage (EXIT_FAILURE);
-      }
     }
+  }
+
+  if (!cpu_specified) {
+    usage (EXIT_FAILURE);
+  }
 
   detect_packages ();
 
   if (duration > 0) {
-    rapl_msr_amd_package_duration (duration);
+    rapl_msr_package_duration (duration);
     exit (EXIT_SUCCESS);
   }
 
-  rapl_msr_amd_package_interval (interval);
+  rapl_msr_package_interval (interval);
 
   exit (EXIT_SUCCESS);
 }
