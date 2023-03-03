@@ -24,6 +24,7 @@
 
 #include <ctype.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -40,7 +41,7 @@
 #define AUTHOR                  "Aaron van Diepen"
 
 /* Interval in milliseconds.    */
-#define DEFAULT_INTERVAL        1000
+#define DEFAULT_INTERVAL         1000
 
 /* AMD READ VALUES              */
 #define AMD_MSR_PWR_UNIT         0xC0010299
@@ -60,15 +61,15 @@
 
 extern const char *__progname;
 
-static int total_cores=0,total_packages=0;
+static uint64_t total_cores=0,total_packages=0;
 static char* exec_name;
 
-static int package_map[MAX_PACKAGES];
+static int8_t package_map[MAX_PACKAGES];
 
-static int MSR_PWR_UNIT;
-static int MSR_PACKAGE_ENERGY;
+static uint32_t MSR_PWR_UNIT;
+static uint32_t MSR_PACKAGE_ENERGY;
 
-static int
+static void
 detect_packages (void)
 {
   char filename[BUFSIZ];
@@ -94,11 +95,11 @@ detect_packages (void)
 
   total_cores=i;
 
-  return 0;
+  return;
 }
 
 static int
-open_msr (int core)
+open_msr (uint64_t core)
 {
   char msr_filename[BUFSIZ];
   int fd;
@@ -140,8 +141,8 @@ Trying to open %s\n\
   return fd;
 }
 
-static long long
-read_msr (int fd, unsigned int which)
+static uint64_t
+read_msr (int fd, uint64_t which)
 {
   uint64_t data;
 
@@ -150,13 +151,13 @@ read_msr (int fd, unsigned int which)
     exit(127);
   }
 
-  return (long long)data;
+  return data;
 }
 
-static int
-rapl_msr_package_interval (int interval)
+static void
+rapl_msr_package_interval (uint64_t interval)
 {
-  unsigned int i;
+  uint64_t i;
   double energy_used;
   double *time_unit = (double*)malloc(sizeof(double)*total_packages);
   double *energy_unit = (double*)malloc(sizeof(double)*total_packages);
@@ -168,27 +169,32 @@ rapl_msr_package_interval (int interval)
   for (i = 0; i < total_packages; i++) {
     fd[i] = open_msr(package_map[i]);
 
-    int core_energy_units = read_msr(fd[i], MSR_PWR_UNIT);
+    uint64_t core_energy_units = read_msr(fd[i], MSR_PWR_UNIT);
 
     time_unit[i] = pow (0.5, (double)((core_energy_units & TIME_UNIT_MASK) >> TIME_UNIT_OFFSET));
     energy_unit[i] = pow (0.5,(double)((core_energy_units & ENERGY_UNIT_MASK) >> ENERGY_UNIT_OFFSET));
     power_unit[i] = pow (0.5,(double)((core_energy_units & POWER_UNIT_MASK) >> POWER_UNIT_OFFSET));
 
-    prev_energy_used[i] = read_msr (fd[i], MSR_PACKAGE_ENERGY) * energy_unit[i];
+    prev_energy_used[i] = read_msr (fd[i], MSR_PACKAGE_ENERGY);
   }
 
   while (1) {
     usleep(interval * 1000);
     for (i = 0; i < total_packages;i++)
     {
-      energy_used = read_msr(fd[i], MSR_PACKAGE_ENERGY) * energy_unit[i];
+      energy_used = read_msr(fd[i], MSR_PACKAGE_ENERGY);
       if (i > 0)
       {
         fputs(",", stdout);
       }
 
+      uint64_t energy_diff = energy_used - prev_energy_used[i];
+      if (energy_used < prev_energy_used[i]) {
+        energy_diff = 0xFFFFFFFF - energy_diff;
+      }
+
       printf("%g",
-              (energy_used - prev_energy_used[i]) * 1000 / interval
+              energy_diff * energy_unit[i] * 1000 / interval
             );
 
       prev_energy_used[i] = energy_used;
@@ -196,13 +202,13 @@ rapl_msr_package_interval (int interval)
     fputs("\n", stdout);
   }
 
-  return 0;
+  return;
 }
 
-static int
-rapl_msr_package_duration (int duration)
+static void
+rapl_msr_package_duration (uint64_t duration)
 {
-  unsigned int i;
+  uint64_t i;
   double energy_used;
   double *time_unit = (double*)malloc(sizeof(double)*total_packages);
   double *energy_unit = (double*)malloc(sizeof(double)*total_packages);
@@ -214,31 +220,36 @@ rapl_msr_package_duration (int duration)
   for (i = 0; i < total_packages; i++) {
     fd[i] = open_msr(package_map[i]);
 
-    int core_energy_units = read_msr(fd[i], MSR_PWR_UNIT);
+    uint64_t core_energy_units = read_msr(fd[i], MSR_PWR_UNIT);
 
     time_unit[i] = pow (0.5, (double)((core_energy_units & TIME_UNIT_MASK) >> TIME_UNIT_OFFSET));
     energy_unit[i] = pow (0.5,(double)((core_energy_units & ENERGY_UNIT_MASK) >> ENERGY_UNIT_OFFSET));
     power_unit[i] = pow (0.5,(double)((core_energy_units & POWER_UNIT_MASK) >> POWER_UNIT_OFFSET));
 
-    prev_energy_used[i] = read_msr (fd[i], MSR_PACKAGE_ENERGY) * energy_unit[i];
+    prev_energy_used[i] = read_msr (fd[i], MSR_PACKAGE_ENERGY);
   }
 
   usleep(duration * 1000);
   for (i = 0; i < total_packages;i++)
   {
-    energy_used = read_msr(fd[i], MSR_PACKAGE_ENERGY) * energy_unit[i];
+    energy_used = read_msr(fd[i], MSR_PACKAGE_ENERGY);
     if (i > 0)
     {
       fputs(",", stdout);
     }
 
+    uint64_t energy_diff = energy_used - prev_energy_used[i];
+    if (energy_used < prev_energy_used[i]) {
+      energy_diff = 0xFFFFFFFF - energy_diff;
+    }
+
     printf("%g",
-            (energy_used - prev_energy_used[i])
+            energy_diff * energy_unit[i]
           );
   }
   fputs("\n", stdout);
 
-  return 0;
+  return;
 }
 
 static inline void
@@ -251,7 +262,7 @@ Try '%s --help' for more information.\n\
           );
 }
 
-void
+static void
 usage (int status)
 {
   if (status != EXIT_SUCCESS)
@@ -290,7 +301,7 @@ Outputs as csv when multiple packages are detected\n\
   exit (status);
 }
 
-void
+static void
 version_etc ()
 {
   printf ("\
@@ -313,7 +324,7 @@ Written by %s.\n\
          );
 }
 
-unsigned int
+static uint64_t
 convert (char *st)
 {
   char *x;
@@ -328,8 +339,8 @@ int
 main (int argc, char **argv)
 {
   /* Variables that are set according to the specified options.  */
-  uintmax_t interval = DEFAULT_INTERVAL;
-  uintmax_t duration = 0;
+  uint64_t interval = DEFAULT_INTERVAL;
+  uint64_t duration = 0;
   bool cpu_specified = false;
 
   if (argc < 2)
@@ -362,7 +373,7 @@ main (int argc, char **argv)
     {NULL, 0, NULL, 0}
   };
 
-  int c;
+  char c;
   while ((c = getopt_long (argc, argv, "i:d:", long_options, NULL))
       != -1)
   {
